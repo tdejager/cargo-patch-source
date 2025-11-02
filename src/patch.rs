@@ -37,31 +37,35 @@ pub fn apply_patches(
     let mut target_doc = read_cargo_toml(target_manifest_path.as_path())?;
 
     // Get current dependencies from the target to know which crates to patch
+    // Include all dependencies, even those without version fields (e.g., git-only deps)
     let current_deps = get_dependencies_table(&target_doc)
         .map(|t| {
             t.iter()
                 .filter_map(|(k, v)| {
-                    // Extract version if it exists
+                    // Extract version if it exists, otherwise use empty string
                     match v {
                         toml_edit::Item::Value(val) => {
                             // Handle simple string version
                             if let Some(version) = val.as_str() {
                                 Some((k.to_string(), version.to_string()))
                             }
-                            // Handle inline table: { version = "...", ... }
+                            // Handle inline table
                             else if let Some(inline_tbl) = val.as_inline_table() {
-                                inline_tbl
+                                // Try to get version, but include the dependency even if there's no version
+                                let version = inline_tbl
                                     .get("version")
                                     .and_then(|v| v.as_str())
-                                    .map(|version| (k.to_string(), version.to_string()))
+                                    .unwrap_or("");
+                                Some((k.to_string(), version.to_string()))
                             } else {
                                 None
                             }
                         }
-                        toml_edit::Item::Table(tbl) => tbl
-                            .get("version")
-                            .and_then(|v| v.as_str())
-                            .map(|version| (k.to_string(), version.to_string())),
+                        toml_edit::Item::Table(tbl) => {
+                            // Try to get version, but include the dependency even if there's no version
+                            let version = tbl.get("version").and_then(|v| v.as_str()).unwrap_or("");
+                            Some((k.to_string(), version.to_string()))
+                        }
                         _ => None,
                     }
                 })
@@ -124,20 +128,25 @@ fn apply_local_path_patches(
     let git_url = detect_common_git_url(target_doc, &crate_names);
 
     // Store original versions from target dependencies table (not our stored versions)
+    // For dependencies without version fields (like git-only), store empty string
     let mut original_versions = HashMap::new();
     if let Some(deps_table) = get_dependencies_table(target_doc) {
         for crate_name in &crate_names {
             if let Some(dep_value) = deps_table.get(crate_name) {
-                if let Some(version) = get_dependency_version(dep_value) {
-                    original_versions.insert(crate_name.clone(), version);
-                }
+                let version = get_dependency_version(dep_value).unwrap_or_default();
+                original_versions.insert(crate_name.clone(), version);
             }
         }
     }
 
     // Update versions in target [workspace.dependencies] to match source local versions
+    // Only update if the original dependency had a version field
     for crate_info in &crates_to_patch {
-        update_dependency_version(target_doc, &crate_info.name, &crate_info.version)?;
+        if let Some(original_version) = original_versions.get(&crate_info.name) {
+            if !original_version.is_empty() {
+                update_dependency_version(target_doc, &crate_info.name, &crate_info.version)?;
+            }
+        }
     }
 
     // Create patch entries
@@ -178,13 +187,24 @@ fn apply_local_path_patches(
     store_original_versions(target_doc, &original_versions)?;
     add_managed_patch(target_doc, patch_key)?;
 
-    // Add patch section to target document
-    target_doc
+    // Add patch section to target document, preserving any existing patches
+    let patch_section = target_doc
         .entry("patch")
         .or_insert(toml_edit::Item::Table(Table::new()))
         .as_table_mut()
-        .unwrap()
-        .insert(patch_key, toml_edit::Item::Table(patch_table));
+        .expect("just inserted a table");
+
+    // Get or create the patch source table (e.g., patch.crates-io)
+    let source_table = patch_section
+        .entry(patch_key)
+        .or_insert(toml_edit::Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("just inserted a table");
+
+    // Add each crate patch, preserving existing patches
+    for (crate_name, patch_spec) in patch_table.iter() {
+        source_table.insert(crate_name, patch_spec.clone());
+    }
 
     Ok(())
 }
@@ -280,13 +300,24 @@ fn apply_git_patches(
     store_original_versions(target_doc, &original_versions)?;
     add_managed_patch(target_doc, "crates-io")?;
 
-    // Add patch section to target document under [patch.crates-io]
-    target_doc
+    // Add patch section to target document under [patch.crates-io], preserving any existing patches
+    let patch_section = target_doc
         .entry("patch")
         .or_insert(toml_edit::Item::Table(Table::new()))
         .as_table_mut()
-        .unwrap()
-        .insert("crates-io", toml_edit::Item::Table(patch_table));
+        .expect("just inserted a table");
+
+    // Get or create the patch.crates-io table
+    let source_table = patch_section
+        .entry("crates-io")
+        .or_insert(toml_edit::Item::Table(Table::new()))
+        .as_table_mut()
+        .expect("just inserted a table");
+
+    // Add each crate patch, preserving existing patches
+    for (crate_name, patch_spec) in patch_table.iter() {
+        source_table.insert(crate_name, patch_spec.clone());
+    }
 
     Ok(())
 }
@@ -317,12 +348,18 @@ pub fn remove_patches(target_manifest_path: Option<PathBuf>) -> Result<()> {
     let original_versions = get_original_versions(&target_doc)?;
 
     // Restore original versions in target before removing patches
-    if !original_versions.is_empty() {
+    // Only restore if there was an actual version field (non-empty)
+    let versions_to_restore: Vec<_> = original_versions
+        .iter()
+        .filter(|(_, version)| !version.is_empty())
+        .collect();
+
+    if !versions_to_restore.is_empty() {
         println!(
             "Restoring original versions for {} crates",
-            original_versions.len()
+            versions_to_restore.len()
         );
-        for (crate_name, version) in &original_versions {
+        for (crate_name, version) in versions_to_restore {
             update_dependency_version(&mut target_doc, crate_name, version)?;
         }
     }

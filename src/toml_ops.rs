@@ -373,13 +373,30 @@ pub fn remove_managed_patches(doc: &mut DocumentMut) -> Result<bool> {
         return Err(PatchError::NoPatchesFound);
     }
 
+    // Get the crates we patched from original-versions
+    let original_versions = get_original_versions(doc)?;
+    let patched_crates: Vec<String> = original_versions.keys().cloned().collect();
+
     let Some(patch_table) = doc.get_mut("patch").and_then(|p| p.as_table_mut()) else {
         return Err(PatchError::NoPatchesFound);
     };
 
-    // Remove each managed patch section
+    // For each managed patch key, remove only the specific crates we added
     for patch_key in &managed_patches {
-        patch_table.remove(patch_key);
+        if let Some(source_table) = patch_table
+            .get_mut(patch_key)
+            .and_then(|t| t.as_table_mut())
+        {
+            // Remove each crate patch we added
+            for crate_name in &patched_crates {
+                source_table.remove(crate_name);
+            }
+
+            // If the source table is now empty, remove it entirely
+            if source_table.is_empty() {
+                patch_table.remove(patch_key);
+            }
+        }
     }
 
     // If patch table is empty, remove it entirely

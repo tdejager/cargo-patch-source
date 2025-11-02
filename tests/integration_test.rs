@@ -275,3 +275,83 @@ fn test_no_matching_crates() {
     // Should fail with NoMatchingCrates error
     assert!(result.is_err());
 }
+
+#[test]
+fn test_preserves_existing_patches() {
+    let temp_dir = TempDir::new().unwrap();
+    let workspace_path = create_mock_workspace(&temp_dir);
+    let project_path = create_target_project(&temp_dir);
+    let manifest_path = project_path.join("Cargo.toml");
+
+    // Add an existing patch to the Cargo.toml
+    let mut existing_content = fs::read_to_string(&manifest_path).unwrap();
+    existing_content.push_str(
+        r#"
+[patch.crates-io]
+some-existing-crate = { path = "/some/other/path" }
+"#,
+    );
+    fs::write(&manifest_path, existing_content).unwrap();
+
+    // Apply our patches
+    let source = PatchSource::local_path(workspace_path);
+    apply_patches(source, Some(manifest_path.clone()), Some("rattler-*")).unwrap();
+
+    // Verify our patches were added
+    let content_after_apply = fs::read_to_string(&manifest_path).unwrap();
+    assert!(content_after_apply.contains("rattler-one"));
+    assert!(content_after_apply.contains("rattler-two"));
+    assert!(content_after_apply.contains("some-existing-crate"));
+
+    // Remove our patches
+    remove_patches(Some(manifest_path.clone())).unwrap();
+
+    // Verify the existing patch is still there
+    let content_after_remove = fs::read_to_string(&manifest_path).unwrap();
+    assert!(content_after_remove.contains("some-existing-crate"));
+    assert!(content_after_remove.contains("[patch.crates-io]"));
+
+    // But our patches should be gone from the patch section
+    // Extract just the patch section to verify
+    let patch_section_start = content_after_remove.find("[patch.crates-io]").unwrap();
+    let patch_section = &content_after_remove[patch_section_start..];
+    assert!(patch_section.contains("some-existing-crate"));
+    assert!(!patch_section.contains("rattler-one = { path"));
+    assert!(!patch_section.contains("rattler-two = { path"));
+}
+
+#[test]
+fn test_patch_git_dependencies_without_version() {
+    let temp_dir = TempDir::new().unwrap();
+    let workspace_path = create_mock_workspace(&temp_dir);
+    let project_path = temp_dir.path().join("git-deps-project");
+    fs::create_dir(&project_path).unwrap();
+
+    // Create a project with git dependencies (no version field)
+    let project_toml = r#"[package]
+name = "git-deps-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rattler-one = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
+rattler-two = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
+other-crate = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
+"#;
+    fs::write(project_path.join("Cargo.toml"), project_toml).unwrap();
+    fs::create_dir(project_path.join("src")).unwrap();
+    fs::write(project_path.join("src/main.rs"), "fn main() {}").unwrap();
+
+    let manifest_path = project_path.join("Cargo.toml");
+
+    // Apply patches - this should work even though dependencies don't have version fields
+    let source = PatchSource::local_path(workspace_path);
+    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
+
+    // Verify patches were added
+    let content = fs::read_to_string(&manifest_path).unwrap();
+    assert!(content.contains("[patch"));
+    assert!(content.contains("rattler-one"));
+    assert!(content.contains("rattler-two"));
+    assert!(content.contains("other-crate"));
+}
