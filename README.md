@@ -4,24 +4,17 @@ A Cargo extension to automatically apply dependency patch sections to `Cargo.tom
 
 ## Features
 
-- 🔧 **Apply patches from local workspaces** - Point to a local workspace and automatically patch all matching dependencies
-- 🌐 **Apply patches from git repositories** - Patch dependencies from a specific git branch, tag, or revision
-- 🎯 **Pattern filtering** - Use wildcards to selectively patch only specific crates
-- 🔄 **Easy removal** - Clean removal of patches to restore original configuration
-- 📦 **Workspace support** - Works with both workspace and package `Cargo.toml` files
-- ✨ **Format preserving** - Uses `toml_edit` to maintain your TOML formatting and comments
+-  **Apply patches from local workspaces** - Point to a local workspace and automatically patch all matching dependencies
+-  **Apply patches from git repositories** - Patch dependencies from a specific git branch, tag, or revision
+-  **Pattern filtering** - Use wildcards to selectively patch only specific crates
+-  **Easy removal** - Clean removal of patches to restore original configuration
+-  **Workspace support** - Works with both workspace and package `Cargo.toml` files
+-  **Format preserving** - Uses `toml_edit` to maintain your TOML formatting and comments
 
 ## Installation
 
 ```bash
 cargo install --path .
-```
-
-Or add to your `Cargo.toml`:
-
-```toml
-[dependencies]
-cargo-patch-source = "0.1.0"
 ```
 
 ## Usage
@@ -199,17 +192,6 @@ Examples:
 - `*-sys` - Matches any crate ending with `-sys`
 - `exact-name` - Matches only `exact-name`
 
-## Error Handling
-
-`cargo-patch-source` uses [miette](https://github.com/zkat/miette) for beautiful error messages:
-
-```
-Error: No matching crates found
-
-Caused by:
-  Pattern "nonexistent-*" did not match any crates in the workspace
-```
-
 ## Development
 
 ### Building
@@ -229,21 +211,6 @@ cargo test
 ```bash
 cargo run -- patch-source apply --help
 ```
-
-## Comparison with `pixi local_patch.py`
-
-This tool is inspired by the `local_patch.py` script from the [pixi](https://github.com/prefix-dev/pixi) project but with several improvements:
-
-| Feature | `local_patch.py` | `cargo-patch-source` |
-|---------|------------------|----------------------|
-| Language | Python | Rust |
-| TOML Handling | Regex-based | AST-based (`toml_edit`) |
-| Format Preservation | Manual | Automatic |
-| Metadata Storage | JSON in comments | Cargo metadata convention |
-| Pattern Matching | Hardcoded | Flexible wildcards |
-| Git Support | No | Yes |
-| Cargo Integration | No | Yes (cargo extension) |
-| Error Messages | Basic | Rich (miette) |
 
 ## License
 

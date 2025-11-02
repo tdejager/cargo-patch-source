@@ -1,36 +1,37 @@
 use crate::cargo_ops::{filter_crates_by_pattern, query_workspace_crates};
 use crate::error::{PatchError, Result};
-use crate::source::{GitReference, PatchSource};
+use crate::source::{GitReference, PatchSource, SourceWorkspacePath, TargetManifestPath};
 use crate::toml_ops::{
     add_managed_patch, detect_common_git_url, get_dependencies_table, get_dependency_version,
     get_original_versions, read_cargo_toml, remove_managed_patches, store_original_versions,
     update_dependency_version, write_cargo_toml,
 };
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use toml_edit::Table;
 
-/// Apply patches from a source to a Cargo.toml
+/// Apply patches from a source to a target Cargo.toml
 pub fn apply_patches(
     source: PatchSource,
-    manifest_path: Option<PathBuf>,
+    target_manifest_path: Option<PathBuf>,
     pattern: Option<&str>,
 ) -> Result<()> {
-    // Determine the manifest path
-    let manifest_path =
-        manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml"));
+    // Determine the target manifest path (defaults to ./Cargo.toml)
+    let target_manifest_path = TargetManifestPath::new(
+        target_manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml")),
+    );
 
-    if !manifest_path.exists() {
+    if !target_manifest_path.as_path().exists() {
         return Err(PatchError::SourceNotFound {
-            path: manifest_path,
+            path: target_manifest_path.as_path().to_path_buf(),
         });
     }
 
-    // Read the target Cargo.toml
-    let mut doc = read_cargo_toml(&manifest_path)?;
+    // Read the target Cargo.toml (the manifest we're going to patch)
+    let mut target_doc = read_cargo_toml(target_manifest_path.as_path())?;
 
-    // Get current dependencies to know which crates to patch
-    let current_deps = get_dependencies_table(&doc)
+    // Get current dependencies from the target to know which crates to patch
+    let current_deps = get_dependencies_table(&target_doc)
         .map(|t| {
             t.iter()
                 .filter_map(|(k, v)| {
@@ -63,39 +64,44 @@ pub fn apply_patches(
         .unwrap_or_default();
 
     match source {
-        PatchSource::LocalPath(path) => {
-            apply_local_path_patches(&mut doc, &path, &current_deps, pattern)?;
+        PatchSource::LocalPath(source_workspace_path) => {
+            apply_local_path_patches(
+                &mut target_doc,
+                &source_workspace_path,
+                &current_deps,
+                pattern,
+            )?;
         }
         PatchSource::Git { url, reference } => {
-            apply_git_patches(&mut doc, &url, reference, &current_deps, pattern)?;
+            apply_git_patches(&mut target_doc, &url, reference, &current_deps, pattern)?;
         }
     }
 
-    // Write back the modified Cargo.toml
-    write_cargo_toml(&manifest_path, &doc)?;
+    // Write back the modified target Cargo.toml
+    write_cargo_toml(target_manifest_path.as_path(), &target_doc)?;
 
     println!(
         "Successfully applied patches to {}",
-        manifest_path.display()
+        target_manifest_path.as_path().display()
     );
     Ok(())
 }
 
-/// Apply patches from a local workspace path
+/// Apply patches from a local source workspace to the target manifest
 fn apply_local_path_patches(
-    doc: &mut toml_edit::DocumentMut,
-    workspace_path: &Path,
+    target_doc: &mut toml_edit::DocumentMut,
+    source_workspace_path: &SourceWorkspacePath,
     current_deps: &HashMap<String, String>,
     pattern: Option<&str>,
 ) -> Result<()> {
-    // Query the workspace for crates
-    let workspace_crates = query_workspace_crates(workspace_path)?;
+    // Query the source workspace for available crates
+    let source_workspace_crates = query_workspace_crates(source_workspace_path.as_path())?;
 
     // Filter by pattern if provided
-    let workspace_crates = filter_crates_by_pattern(workspace_crates, pattern)?;
+    let source_workspace_crates = filter_crates_by_pattern(source_workspace_crates, pattern)?;
 
-    // Filter to only crates that are in current dependencies
-    let crates_to_patch: Vec<_> = workspace_crates
+    // Filter to only crates that are in current target dependencies
+    let crates_to_patch: Vec<_> = source_workspace_crates
         .into_iter()
         .filter(|c| current_deps.contains_key(&c.name))
         .collect();
@@ -105,15 +111,15 @@ fn apply_local_path_patches(
         return Ok(());
     }
 
-    // Collect crate names for git URL detection
+    // Collect crate names for git URL detection in the target
     let crate_names: Vec<String> = crates_to_patch.iter().map(|c| c.name.clone()).collect();
 
-    // Detect if these dependencies come from a common git URL
-    let git_url = detect_common_git_url(doc, &crate_names);
+    // Detect if these dependencies in the target come from a common git URL
+    let git_url = detect_common_git_url(target_doc, &crate_names);
 
-    // Store original versions from dependencies table (not our stored versions)
+    // Store original versions from target dependencies table (not our stored versions)
     let mut original_versions = HashMap::new();
-    if let Some(deps_table) = get_dependencies_table(doc) {
+    if let Some(deps_table) = get_dependencies_table(target_doc) {
         for crate_name in &crate_names {
             if let Some(dep_value) = deps_table.get(crate_name) {
                 if let Some(version) = get_dependency_version(dep_value) {
@@ -123,9 +129,9 @@ fn apply_local_path_patches(
         }
     }
 
-    // Update versions in [workspace.dependencies] to match local versions
+    // Update versions in target [workspace.dependencies] to match source local versions
     for crate_info in &crates_to_patch {
-        update_dependency_version(doc, &crate_info.name, &crate_info.version)?;
+        update_dependency_version(target_doc, &crate_info.name, &crate_info.version)?;
     }
 
     // Create patch entries
@@ -162,12 +168,13 @@ fn apply_local_path_patches(
         "crates-io"
     };
 
-    // Store original versions and track managed patch in metadata
-    store_original_versions(doc, &original_versions)?;
-    add_managed_patch(doc, patch_key)?;
+    // Store original versions and track managed patch in target metadata
+    store_original_versions(target_doc, &original_versions)?;
+    add_managed_patch(target_doc, patch_key)?;
 
-    // Add to document under appropriate patch section
-    doc.entry("patch")
+    // Add patch section to target document
+    target_doc
+        .entry("patch")
         .or_insert(toml_edit::Item::Table(Table::new()))
         .as_table_mut()
         .unwrap()
@@ -176,16 +183,16 @@ fn apply_local_path_patches(
     Ok(())
 }
 
-/// Apply patches from a git repository
+/// Apply patches from a git repository to the target manifest
 fn apply_git_patches(
-    doc: &mut toml_edit::DocumentMut,
+    target_doc: &mut toml_edit::DocumentMut,
     git_url: &str,
     reference: Option<GitReference>,
     current_deps: &HashMap<String, String>,
     pattern: Option<&str>,
 ) -> Result<()> {
     // For git patches, we can't easily query the remote repository
-    // So we'll patch all dependencies that match the pattern (or all if no pattern)
+    // So we'll patch all target dependencies that match the pattern (or all if no pattern)
 
     let crates_to_patch: Vec<_> = if let Some(pattern) = pattern {
         // Convert glob pattern to regex
@@ -263,12 +270,13 @@ fn apply_git_patches(
         println!("  Patching {} -> {}{}", crate_name, git_url, ref_str);
     }
 
-    // Store original versions and track managed patch in metadata
-    store_original_versions(doc, &original_versions)?;
-    add_managed_patch(doc, "crates-io")?;
+    // Store original versions and track managed patch in target metadata
+    store_original_versions(target_doc, &original_versions)?;
+    add_managed_patch(target_doc, "crates-io")?;
 
-    // Add to document under [patch.crates-io]
-    doc.entry("patch")
+    // Add patch section to target document under [patch.crates-io]
+    target_doc
+        .entry("patch")
         .or_insert(toml_edit::Item::Table(Table::new()))
         .as_table_mut()
         .unwrap()
@@ -277,20 +285,21 @@ fn apply_git_patches(
     Ok(())
 }
 
-/// Remove patches from a Cargo.toml
-pub fn remove_patches(manifest_path: Option<PathBuf>, pattern: Option<&str>) -> Result<()> {
-    // Determine the manifest path
-    let manifest_path =
-        manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml"));
+/// Remove patches from a target Cargo.toml
+pub fn remove_patches(target_manifest_path: Option<PathBuf>, pattern: Option<&str>) -> Result<()> {
+    // Determine the target manifest path (defaults to ./Cargo.toml)
+    let target_manifest_path = TargetManifestPath::new(
+        target_manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml")),
+    );
 
-    if !manifest_path.exists() {
+    if !target_manifest_path.as_path().exists() {
         return Err(PatchError::SourceNotFound {
-            path: manifest_path,
+            path: target_manifest_path.as_path().to_path_buf(),
         });
     }
 
-    // Read the target Cargo.toml
-    let mut doc = read_cargo_toml(&manifest_path)?;
+    // Read the target Cargo.toml (the manifest we're going to modify)
+    let mut target_doc = read_cargo_toml(target_manifest_path.as_path())?;
 
     // If pattern is specified, we need to selectively remove patches
     // For now, we'll remove all managed patches
@@ -301,29 +310,29 @@ pub fn remove_patches(manifest_path: Option<PathBuf>, pattern: Option<&str>) -> 
         );
     }
 
-    // Get original versions from metadata
-    let original_versions = get_original_versions(&doc)?;
+    // Get original versions from target metadata
+    let original_versions = get_original_versions(&target_doc)?;
 
-    // Restore original versions before removing patches
+    // Restore original versions in target before removing patches
     if !original_versions.is_empty() {
         println!(
             "Restoring original versions for {} crates",
             original_versions.len()
         );
         for (crate_name, version) in &original_versions {
-            update_dependency_version(&mut doc, crate_name, version)?;
+            update_dependency_version(&mut target_doc, crate_name, version)?;
         }
     }
 
-    // Remove all managed patches
-    let removed = remove_managed_patches(&mut doc)?;
+    // Remove all managed patches from target
+    let removed = remove_managed_patches(&mut target_doc)?;
 
     if removed {
-        // Write back the modified Cargo.toml
-        write_cargo_toml(&manifest_path, &doc)?;
+        // Write back the modified target Cargo.toml
+        write_cargo_toml(target_manifest_path.as_path(), &target_doc)?;
         println!(
             "Successfully removed patches from {}",
-            manifest_path.display()
+            target_manifest_path.as_path().display()
         );
         Ok(())
     } else {
