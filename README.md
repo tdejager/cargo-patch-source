@@ -33,7 +33,9 @@ Run `cargo patch-source remove` when you want the manifest restored—original v
 ## Install
 
 ```console
+# use pixi 
 pixi global install --path .
+# or cargo
 cargo install --locked --path .
 ```
 
