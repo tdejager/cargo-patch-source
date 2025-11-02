@@ -1,4 +1,4 @@
-# cargo-patch-source
+# cargo patch-source
 
 A zero-fuss `cargo` subcommand that swaps dependencies to local or git sources and puts your `Cargo.toml` back the moment you’re done.
 
