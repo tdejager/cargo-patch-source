@@ -8,7 +8,7 @@ Let's say we have a local crate `rattler` that also has different versions than 
 This can be a bit of pain to find all workspace members, add all entries, use the correct version (otherwise cargo won't use it).
 Well not anymore!
 
-```bash
+```console
 cargo patch-source apply --path ../rattler --pattern "rattler-*"
 ```
 
