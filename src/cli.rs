@@ -51,10 +51,6 @@ pub enum Commands {
 
     /// Remove patches from the current Cargo.toml
     Remove {
-        /// Pattern to filter which patches to remove
-        #[arg(long)]
-        pattern: Option<String>,
-
         /// Path to Cargo.toml to modify (defaults to current directory)
         #[arg(long)]
         manifest_path: Option<PathBuf>,

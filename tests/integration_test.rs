@@ -172,7 +172,7 @@ fn test_remove_patches() {
     assert!(content_before.contains("[patch.crates-io]"));
 
     // Remove patches
-    remove_patches(Some(manifest_path.clone()), None).unwrap();
+    remove_patches(Some(manifest_path.clone())).unwrap();
 
     // Verify patches were removed
     let content_after = fs::read_to_string(&manifest_path).unwrap();
@@ -195,7 +195,7 @@ fn test_apply_remove_roundtrip() {
     apply_patches(source, Some(manifest_path.clone()), None).unwrap();
 
     // Remove patches
-    remove_patches(Some(manifest_path.clone()), None).unwrap();
+    remove_patches(Some(manifest_path.clone())).unwrap();
 
     // Content should be back to original (mostly - whitespace might differ)
     let final_content = fs::read_to_string(&manifest_path).unwrap();

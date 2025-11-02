@@ -1,6 +1,5 @@
 use crate::error::{PatchError, Result};
 use cargo_metadata::MetadataCommand;
-use std::collections::HashMap;
 use std::path::Path;
 
 /// Information about a crate that can be patched
@@ -16,7 +15,7 @@ pub fn query_workspace_crates(workspace_path: &Path) -> Result<Vec<CrateInfo>> {
     let manifest_path = workspace_path.join("Cargo.toml");
 
     if !manifest_path.exists() {
-        return Err(PatchError::SourceNotFound {
+        return Err(PatchError::SourceWorkspaceNotFound {
             path: manifest_path,
         });
     }
@@ -43,27 +42,6 @@ pub fn query_workspace_crates(workspace_path: &Path) -> Result<Vec<CrateInfo>> {
     }
 
     Ok(workspace_members)
-}
-
-/// Query metadata for the current/target Cargo.toml to find which dependencies are used
-pub fn query_current_dependencies(manifest_path: &Path) -> Result<HashMap<String, String>> {
-    let metadata = MetadataCommand::new()
-        .manifest_path(manifest_path)
-        .exec()
-        .map_err(|e| PatchError::CargoMetadataError { source: e })?;
-
-    let mut dependencies = HashMap::new();
-
-    // Collect workspace dependencies if this is a workspace root
-    if let Some(resolve) = metadata.resolve {
-        for node in resolve.nodes {
-            if let Some(pkg) = metadata.packages.iter().find(|p| p.id == node.id) {
-                dependencies.insert(pkg.name.clone(), pkg.version.to_string());
-            }
-        }
-    }
-
-    Ok(dependencies)
 }
 
 /// Filter crates by pattern (supports wildcards)

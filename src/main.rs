@@ -37,11 +37,8 @@ fn main() -> Result<()> {
 
             apply_patches(source, manifest_path, pattern.as_deref())?;
         }
-        Commands::Remove {
-            pattern,
-            manifest_path,
-        } => {
-            remove_patches(manifest_path, pattern.as_deref())?;
+        Commands::Remove { manifest_path } => {
+            remove_patches(manifest_path)?;
         }
     }
 

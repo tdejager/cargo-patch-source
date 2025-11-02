@@ -72,9 +72,9 @@ cargo patch-source remove
 ```
 
 This will:
-1. Find all patch sections managed by `cargo-patch-source`
-2. Remove them completely
-3. Clean up the `[patch]` section if it's now empty
+1. Restore original dependency versions
+2. Remove all patch sections managed by `cargo-patch-source`
+3. Clean up metadata and the `[patch]` section if it's now empty
 
 ### Custom Manifest Path
 

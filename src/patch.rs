@@ -17,12 +17,18 @@ pub fn apply_patches(
     pattern: Option<&str>,
 ) -> Result<()> {
     // Determine the target manifest path (defaults to ./Cargo.toml)
-    let target_manifest_path = TargetManifestPath::new(
-        target_manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml")),
-    );
+    let default_path = match target_manifest_path {
+        Some(path) => path,
+        None => {
+            let current_dir =
+                std::env::current_dir().map_err(|e| PatchError::CurrentDirError { source: e })?;
+            current_dir.join("Cargo.toml")
+        }
+    };
+    let target_manifest_path = TargetManifestPath::new(default_path);
 
     if !target_manifest_path.as_path().exists() {
-        return Err(PatchError::SourceNotFound {
+        return Err(PatchError::TargetManifestNotFound {
             path: target_manifest_path.as_path().to_path_buf(),
         });
     }
@@ -286,29 +292,26 @@ fn apply_git_patches(
 }
 
 /// Remove patches from a target Cargo.toml
-pub fn remove_patches(target_manifest_path: Option<PathBuf>, pattern: Option<&str>) -> Result<()> {
+pub fn remove_patches(target_manifest_path: Option<PathBuf>) -> Result<()> {
     // Determine the target manifest path (defaults to ./Cargo.toml)
-    let target_manifest_path = TargetManifestPath::new(
-        target_manifest_path.unwrap_or_else(|| std::env::current_dir().unwrap().join("Cargo.toml")),
-    );
+    let default_path = match target_manifest_path {
+        Some(path) => path,
+        None => {
+            let current_dir =
+                std::env::current_dir().map_err(|e| PatchError::CurrentDirError { source: e })?;
+            current_dir.join("Cargo.toml")
+        }
+    };
+    let target_manifest_path = TargetManifestPath::new(default_path);
 
     if !target_manifest_path.as_path().exists() {
-        return Err(PatchError::SourceNotFound {
+        return Err(PatchError::TargetManifestNotFound {
             path: target_manifest_path.as_path().to_path_buf(),
         });
     }
 
     // Read the target Cargo.toml (the manifest we're going to modify)
     let mut target_doc = read_cargo_toml(target_manifest_path.as_path())?;
-
-    // If pattern is specified, we need to selectively remove patches
-    // For now, we'll remove all managed patches
-    // TODO: Implement pattern-based removal
-    if pattern.is_some() {
-        println!(
-            "Warning: Pattern-based removal not yet implemented, removing all managed patches"
-        );
-    }
 
     // Get original versions from target metadata
     let original_versions = get_original_versions(&target_doc)?;

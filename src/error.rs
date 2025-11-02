@@ -39,13 +39,24 @@ pub enum PatchError {
     #[diagnostic(code(patch::cli::no_source))]
     NoSourceSpecified,
 
-    #[error("Source path does not exist: {path}")]
+    #[error("Source workspace path does not exist: {path}")]
     #[diagnostic(code(patch::source::not_found))]
-    SourceNotFound { path: PathBuf },
+    SourceWorkspaceNotFound { path: PathBuf },
+
+    #[error("Target manifest does not exist: {path}")]
+    #[diagnostic(code(patch::target::not_found))]
+    TargetManifestNotFound { path: PathBuf },
 
     #[error("Source path is not a valid cargo workspace: {path}")]
     #[diagnostic(code(patch::source::not_workspace))]
     NotAWorkspace { path: PathBuf },
+
+    #[error("Failed to get current directory")]
+    #[diagnostic(code(patch::env::current_dir))]
+    CurrentDirError {
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("No crates found matching pattern: {pattern}")]
     #[diagnostic(code(patch::pattern::no_match))]
