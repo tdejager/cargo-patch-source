@@ -1,180 +1,57 @@
 # cargo-patch-source
 
-A Cargo extension to automatically apply dependency patch sections to `Cargo.toml` files. This tool is especially useful for local development workflows where you need to temporarily switch dependencies to local versions for testing and development.
+> A zero-fuss `cargo` subcommand that swaps dependencies to local or git sources and puts your `Cargo.toml` back the moment you’re done.
 
-## Installation
+### One Command, Clear Result
 
-```bash
-pixi global install --path .
-cargo install --locked --path .
-```
-After which, it should be available with `cargo patch-source`.
-
-## Usage
-
-### Apply Patches from a Local Workspace
-
-Point to a local workspace directory and patch all matching dependencies:
-
-```bash
-cargo patch-source apply --path ../rattler
-```
-
-This will:
-1. Discover all crates in the `../rattler` workspace
-2. Find which of those crates are used in your current project
-3. Add `[patch.crates-io]` entries pointing to the local paths
-4. Store original versions for later restoration
-
-### Apply Patches with Pattern Filtering
-
-Use wildcards to only patch specific crates:
-
-```bash
+```console
 cargo patch-source apply --path ../rattler --pattern "rattler-*"
 ```
 
-This will only patch crates whose names match the pattern `rattler-*`.
+```diff
+ [dependencies]
+ rattler-one = "1.0.0"
+ rattler-two = "2.0.0"
 
-### Apply Patches from a Git Repository
-
-Patch dependencies from a git repository:
-
-```bash
-# Use default branch
-cargo patch-source apply --git https://github.com/prefix-dev/rattler --pattern "rattler-*"
-
-**Note:** When using git sources, you must specify a `--pattern` to indicate which crates to patch.
-
-### Remove Patches
-
-Remove all managed patches:
-
-```bash
-cargo patch-source remove
++[package.metadata.cargo-patch-source]
++original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
++managed-patches = ["crates-io"]
++
++[patch.crates-io]
++rattler-one = { path = "../rattler/crates/rattler-one" }
++rattler-two = { path = "../rattler/crates/rattler-two" }
 ```
 
-This will:
-1. Restore original dependency versions
-2. Remove all patch sections managed by `cargo-patch-source`
-3. Clean up metadata and the `[patch]` section if it's now empty
+Run `cargo patch-source remove` when you want the manifest restored—original versions are reinstated and the patch section disappears.
 
-### Custom Manifest Path
+## Install
 
-Specify a custom `Cargo.toml` path:
-
-```bash
-cargo patch-source apply --path ../rattler --manifest-path path/to/Cargo.toml
-cargo patch-source remove --manifest-path path/to/Cargo.toml
+```console
+pixi global install --path .
+cargo install --locked --path .
 ```
 
-## How It Works
+The subcommand is then available as `cargo patch-source`.
 
-`cargo-patch-source` uses Cargo's `[patch]` section to temporarily override dependencies. It stores metadata using Cargo's official `metadata` convention (similar to `package.metadata.docs.rs`), which Cargo officially ignores.
+## Extra Usage
 
-### Before:
+| Goal | Command |
+| --- | --- |
+| Use crates from a sibling workspace | `cargo patch-source apply --path ../workspace` |
+| Sync just a subset (glob syntax) | `cargo patch-source apply --path ../workspace --pattern "rattler-*"` |
+| Try a remote branch/tag/rev | `cargo patch-source apply --git https://github.com/org/repo --branch feature --pattern "crate-*"` |
+| Target a different manifest | `cargo patch-source apply --path ../workspace --manifest-path other/Cargo.toml` |
+| Undo all managed patches | `cargo patch-source remove [--manifest-path …]` |
 
-```toml
-[dependencies]
-rattler-one = "1.0.0"
-rattler-two = "2.0.0"
-```
+Patterns accept `*` and `?`, are anchored to the crate name, and reuse the same glob helper for both local and git workflows.
 
-### After applying patches:
+## What It Tracks
 
-```toml
-[dependencies]
-rattler-one = "1.0.0"
-rattler-two = "2.0.0"
+- **Original versions** so `remove` can safely revert your dependency constraints.
+- **Managed patch tables** so existing manual patches stay untouched.
 
-# This is added to keep track of the change
-[package.metadata.cargo-patch-source]
-original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
-managed-patches = ["crates-io"]
+Metadata is stored under `package.metadata.cargo-patch-source` (or `workspace.metadata…`) which Cargo ignores.
 
-[patch.crates-io]
-rattler-one = { path = "../rattler/crates/rattler-one" }
-rattler-two = { path = "../rattler/crates/rattler-two" }
-```
+## Contributing & License
 
-The tool uses Cargo's metadata convention to track:
-- **`original-versions`**: Original dependency versions for restoration
-- **`managed-patches`**: Which patch sections are managed by the tool, so as not to remove too much
-
-## Examples
-
-### Example 1: Local Development Workflow
-
-You're working on both a library and an application that uses it:
-
-```bash
-# Directory structure:
-# ~/projects/
-#   ├── my-app/
-#   └── my-lib/
-
-cd ~/projects/my-app
-
-# Apply local patches for development
-cargo patch-source apply --path ../my-lib
-
-# Make changes to my-lib and test them immediately
-cargo build
-
-# When done, remove patches
-cargo patch-source remove
-```
-
-### Example 2: Testing a Git Branch
-
-Testing a specific branch of a dependency:
-
-```bash
-cargo patch-source apply \
-  --git https://github.com/org/repo \
-  --branch feature-branch \
-  --pattern "crate-*"
-
-# Run tests
-cargo test
-
-# Remove when done
-cargo patch-source remove
-```
-
-### Example 3: Selective Patching
-
-Only patch specific crates from a large workspace:
-
-```bash
-# Only patch rattler networking crates
-cargo patch-source apply --path ../rattler --pattern "rattler-net*"
-
-# Or only patch one specific crate
-cargo patch-source apply --path ../rattler --pattern "rattler-digest"
-```
-
-## Pattern Syntax
-
-Patterns support basic wildcards:
-- `*` - Matches any characters
-- `?` - Matches a single character
-- Patterns are anchored (must match the entire crate name)
-
-### Examples:
-- `rattler-*` - Matches `rattler-one`, `rattler-two`, etc.
-- `*-sys` - Matches any crate ending with `-sys`
-- `exact-name` - Matches only `exact-name`
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Acknowledgments
-
-- Continuation on [pixi](https://github.com/prefix-dev/pixi) project's `local_patch.py`
-- Built with [clap](https://github.com/clap-rs/clap), [toml_edit](https://github.com/ordian/toml_edit), and [miette](https://github.com/zkat/miette)
+Pull requests are welcome. Released under the MIT license—see [LICENSE](LICENSE). Built on top of familiar crates like `clap`, `toml_edit`, `miette`, and friends.
