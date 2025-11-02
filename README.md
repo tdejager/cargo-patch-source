@@ -1,8 +1,10 @@
 # cargo-patch-source
 
-> A zero-fuss `cargo` subcommand that swaps dependencies to local or git sources and puts your `Cargo.toml` back the moment you’re done.
+A zero-fuss `cargo` subcommand that swaps dependencies to local or git sources and puts your `Cargo.toml` back the moment you’re done.
 
-### One Command, Clear Result
+### How to use?
+
+Let's say we have a local crate rattler that also has different versions than currently specified in the manifest.
 
 ```console
 cargo patch-source apply --path ../rattler --pattern "rattler-*"
@@ -10,8 +12,10 @@ cargo patch-source apply --path ../rattler --pattern "rattler-*"
 
 ```diff
  [dependencies]
- rattler-one = "1.0.0"
- rattler-two = "2.0.0"
+-rattler-one = "1.0.0"
+-rattler-two = "2.0.0"
++rattler-one = "1.1.0"
++rattler-two = "2.2.0"
 
 +[package.metadata.cargo-patch-source]
 +original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
