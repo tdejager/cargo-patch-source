@@ -1,107 +1,57 @@
 use cargo_patch_source::source::{GitReference, PatchSource};
 use cargo_patch_source::{apply_patches, remove_patches};
 use insta::assert_snapshot;
-use std::fs;
-use std::path::PathBuf;
-use tempfile::TempDir;
+use toml_edit::DocumentMut;
 
-/// Create a mock workspace with multiple crates
-fn create_mock_workspace(temp_dir: &TempDir) -> PathBuf {
-    let workspace_path = temp_dir.path().join("mock-workspace");
-    fs::create_dir(&workspace_path).unwrap();
+mod support;
 
-    // Create workspace Cargo.toml
-    let workspace_toml = r#"[workspace]
-members = ["crates/*"]
+use support::{DependencySpec, Project, TestFixture, Workspace};
 
-[workspace.dependencies]
-rattler-one = "1.0.0"
-rattler-two = "2.0.0"
-other-crate = "3.0.0"
-"#;
-    fs::write(workspace_path.join("Cargo.toml"), workspace_toml).unwrap();
-
-    // Create crates directory
-    let crates_dir = workspace_path.join("crates");
-    fs::create_dir(&crates_dir).unwrap();
-
-    // Create rattler-one crate
-    let rattler_one_dir = crates_dir.join("rattler-one");
-    fs::create_dir(&rattler_one_dir).unwrap();
-    let rattler_one_toml = r#"[package]
-name = "rattler-one"
-version = "1.0.0"
-edition = "2021"
-"#;
-    fs::write(rattler_one_dir.join("Cargo.toml"), rattler_one_toml).unwrap();
-    fs::create_dir(rattler_one_dir.join("src")).unwrap();
-    fs::write(rattler_one_dir.join("src/lib.rs"), "").unwrap();
-
-    // Create rattler-two crate
-    let rattler_two_dir = crates_dir.join("rattler-two");
-    fs::create_dir(&rattler_two_dir).unwrap();
-    let rattler_two_toml = r#"[package]
-name = "rattler-two"
-version = "2.0.0"
-edition = "2021"
-"#;
-    fs::write(rattler_two_dir.join("Cargo.toml"), rattler_two_toml).unwrap();
-    fs::create_dir(rattler_two_dir.join("src")).unwrap();
-    fs::write(rattler_two_dir.join("src/lib.rs"), "").unwrap();
-
-    // Create other-crate
-    let other_dir = crates_dir.join("other-crate");
-    fs::create_dir(&other_dir).unwrap();
-    let other_toml = r#"[package]
-name = "other-crate"
-version = "3.0.0"
-edition = "2021"
-"#;
-    fs::write(other_dir.join("Cargo.toml"), other_toml).unwrap();
-    fs::create_dir(other_dir.join("src")).unwrap();
-    fs::write(other_dir.join("src/lib.rs"), "").unwrap();
-
-    workspace_path
+fn rattler_workspace(fixture: &TestFixture) -> Workspace {
+    fixture
+        .workspace("mock-workspace")
+        .member("rattler-one", "1.0.0")
+        .member("rattler-two", "2.0.0")
+        .member("other-crate", "3.0.0")
+        .build()
 }
 
-/// Create a target project that depends on the workspace crates
-fn create_target_project(temp_dir: &TempDir) -> PathBuf {
-    let project_path = temp_dir.path().join("target-project");
-    fs::create_dir(&project_path).unwrap();
+fn rattler_project(fixture: &TestFixture) -> Project {
+    fixture
+        .project("target-project")
+        .dep_version("rattler-one", "1.0.0")
+        .dep_version("rattler-two", "2.0.0")
+        .dep_version("other-crate", "3.0.0")
+        .build()
+}
 
-    let project_toml = r#"[package]
-name = "target-project"
-version = "0.1.0"
-edition = "2021"
-
-[dependencies]
-rattler-one = "1.0.0"
-rattler-two = "2.0.0"
-other-crate = "3.0.0"
-"#;
-    fs::write(project_path.join("Cargo.toml"), project_toml).unwrap();
-    fs::create_dir(project_path.join("src")).unwrap();
-    fs::write(project_path.join("src/main.rs"), "fn main() {}").unwrap();
-
-    project_path
+fn normalize_manifest(content: &str, workspace: Option<&Workspace>) -> String {
+    let mut normalized = content.to_string();
+    if let Some(ws) = workspace {
+        if let Some(ws_str) = ws.path().to_str() {
+            normalized = normalized.replace(ws_str, "<workspace>");
+        }
+    }
+    normalized
 }
 
 #[test]
 fn test_apply_local_patches_all_crates() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+    let manifest_path = project.manifest_path().to_path_buf();
 
-    // Apply patches from local workspace
-    let source = PatchSource::local_path(workspace_path.clone());
-    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(manifest_path.clone()),
+        None,
+    )
+    .unwrap();
 
-    // Read the modified Cargo.toml
-    let content = fs::read_to_string(&manifest_path).unwrap();
-
-    // Parse and extract the metadata section for snapshot testing
-    let doc: toml_edit::DocumentMut = content.parse().unwrap();
+    let content = project.read_manifest();
+    let normalized = normalize_manifest(&content, Some(&workspace));
+    let doc: DocumentMut = content.parse().unwrap();
     if let Some(package) = doc.get("package") {
         if let Some(metadata) = package.get("metadata") {
             if let Some(our_metadata) = metadata.get("cargo-patch-source") {
@@ -113,29 +63,52 @@ fn test_apply_local_patches_all_crates() {
         }
     }
 
-    // Verify patches were added (without checking exact paths which are temporary)
-    assert!(content.contains("[patch.crates-io]"));
-    assert!(content.contains("rattler-one"));
-    assert!(content.contains("rattler-two"));
-    assert!(content.contains("other-crate"));
+    assert_snapshot!(
+        normalized.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata]
+
+[package.metadata.cargo-patch-source]
+original-versions = { other-crate = "3.0.0", rattler-one = "1.0.0", rattler-two = "2.0.0" }
+managed-patches = ["crates-io"]
+
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+
+[patch]
+
+[patch.crates-io]
+other-crate = { path = "<workspace>/crates/other-crate" }
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
 }
 
 #[test]
 fn test_apply_local_patches_with_pattern() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+    let manifest_path = project.manifest_path().to_path_buf();
 
-    // Apply patches only for rattler-* crates
-    let source = PatchSource::local_path(workspace_path);
-    apply_patches(source, Some(manifest_path.clone()), Some("rattler-*")).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(manifest_path.clone()),
+        Some("rattler-*"),
+    )
+    .unwrap();
 
-    // Read the modified Cargo.toml
-    let content = fs::read_to_string(&manifest_path).unwrap();
-
-    // Parse and extract the metadata section for snapshot testing
-    let doc: toml_edit::DocumentMut = content.parse().unwrap();
+    let content = project.read_manifest();
+    let normalized = normalize_manifest(&content, Some(&workspace));
+    let doc: DocumentMut = content.parse().unwrap();
     if let Some(package) = doc.get("package") {
         if let Some(metadata) = package.get("metadata") {
             if let Some(our_metadata) = metadata.get("cargo-patch-source") {
@@ -147,84 +120,163 @@ fn test_apply_local_patches_with_pattern() {
         }
     }
 
-    // Verify only rattler crates were patched
-    assert!(content.contains("rattler-one"));
-    assert!(content.contains("rattler-two"));
-    // other-crate should not be in the patch section
-    let patch_section_start = content.find("[patch.crates-io]").unwrap();
-    let patch_section = &content[patch_section_start..];
-    assert!(!patch_section.contains("other-crate = { path"));
+    assert_snapshot!(
+        normalized.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata]
+
+[package.metadata.cargo-patch-source]
+original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
+managed-patches = ["crates-io"]
+
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+
+[patch]
+
+[patch.crates-io]
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
+
+    let patch_table = doc
+        .get("patch")
+        .and_then(|p| p.get("crates-io"))
+        .and_then(|item| item.as_table())
+        .cloned()
+        .unwrap();
+
+    let mut patched_crates: Vec<_> = patch_table.iter().map(|(k, _)| k.to_string()).collect();
+    patched_crates.sort();
+    let patched_crates_repr = format!("{:?}", patched_crates);
+    assert_snapshot!(
+        patched_crates_repr.as_str(),
+        @r###"["rattler-one", "rattler-two"]"###
+    );
 }
 
 #[test]
 fn test_remove_patches() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+    let manifest_path = project.manifest_path().to_path_buf();
 
-    // First apply patches
-    let source = PatchSource::local_path(workspace_path);
-    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(manifest_path.clone()),
+        None,
+    )
+    .unwrap();
 
-    // Verify patches exist
-    let content_before = fs::read_to_string(&manifest_path).unwrap();
-    assert!(content_before.contains("[patch.crates-io]"));
+    let content_before = project.read_manifest();
+    let normalized_before = normalize_manifest(&content_before, Some(&workspace));
+    assert_snapshot!(
+        normalized_before.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
 
-    // Remove patches
+[package.metadata]
+
+[package.metadata.cargo-patch-source]
+original-versions = { other-crate = "3.0.0", rattler-one = "1.0.0", rattler-two = "2.0.0" }
+managed-patches = ["crates-io"]
+
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+
+[patch]
+
+[patch.crates-io]
+other-crate = { path = "<workspace>/crates/other-crate" }
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
+
     remove_patches(Some(manifest_path.clone())).unwrap();
 
-    // Verify patches were removed
-    let content_after = fs::read_to_string(&manifest_path).unwrap();
-    assert!(!content_after.contains("[patch.crates-io]"));
-    assert!(!content_after.contains("[package.metadata.cargo-patch-source]"));
+    let content_after = project.read_manifest();
+    let normalized_after = normalize_manifest(&content_after, Some(&workspace));
+    assert_snapshot!(
+        normalized_after.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+"###
+    );
 }
 
 #[test]
 fn test_apply_remove_roundtrip() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+    let manifest_path = project.manifest_path().to_path_buf();
 
-    // Save original content (we don't compare it directly due to potential formatting differences)
-    let _original_content = fs::read_to_string(&manifest_path).unwrap();
+    let _original_content = project.read_manifest();
 
-    // Apply patches
-    let source = PatchSource::local_path(workspace_path);
-    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(manifest_path.clone()),
+        None,
+    )
+    .unwrap();
 
-    // Remove patches
     remove_patches(Some(manifest_path.clone())).unwrap();
 
-    // Content should be back to original (mostly - whitespace might differ)
-    let final_content = fs::read_to_string(&manifest_path).unwrap();
-    assert!(!final_content.contains("[patch.crates-io]"));
-    assert!(!final_content.contains("cargo-patch-source"));
+    let final_content = project.read_manifest();
+    let normalized = normalize_manifest(&final_content, Some(&workspace));
+    assert_snapshot!(
+        normalized.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
 
-    // Dependencies should still be there
-    assert!(final_content.contains("rattler-one"));
-    assert!(final_content.contains("rattler-two"));
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+"###
+    );
 }
 
 #[test]
 fn test_apply_git_patches() {
-    let temp_dir = TempDir::new().unwrap();
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let project = rattler_project(&fixture);
+    let manifest_path = project.manifest_path().to_path_buf();
 
-    // Apply git patches with pattern
     let source = PatchSource::git(
         "https://github.com/prefix-dev/rattler".to_string(),
         Some(GitReference::Branch("main".to_string())),
     );
     apply_patches(source, Some(manifest_path.clone()), Some("rattler-*")).unwrap();
 
-    // Read the modified Cargo.toml
-    let content = fs::read_to_string(&manifest_path).unwrap();
-
-    // Parse and extract the metadata section for snapshot testing
-    let doc: toml_edit::DocumentMut = content.parse().unwrap();
+    let content = project.read_manifest();
+    let doc: DocumentMut = content.parse().unwrap();
     if let Some(package) = doc.get("package") {
         if let Some(metadata) = package.get("metadata") {
             if let Some(our_metadata) = metadata.get("cargo-patch-source") {
@@ -236,122 +288,331 @@ fn test_apply_git_patches() {
         }
     }
 
-    // Verify git patches were added
-    assert!(content.contains("[patch.crates-io]"));
-    assert!(content.contains("git = \"https://github.com/prefix-dev/rattler\""));
-    assert!(content.contains("branch = \"main\""));
-    assert!(content.contains("rattler-one"));
-    assert!(content.contains("rattler-two"));
+    let patch_crates_io = doc
+        .get("patch")
+        .and_then(|p| p.get("crates-io"))
+        .and_then(|item| item.as_table())
+        .cloned()
+        .unwrap();
+
+    let mut entries: Vec<_> = patch_crates_io
+        .iter()
+        .map(|(name, value)| {
+            let value_str = value.to_string();
+            format!("{} = {}", name, value_str.trim_start())
+        })
+        .collect();
+    entries.sort();
+    let patch_snapshot = entries.join("\n");
+
+    assert_snapshot!(
+        patch_snapshot.as_str(),
+        @r###"
+rattler-one = { git = "https://github.com/prefix-dev/rattler", branch = "main" }
+rattler-two = { git = "https://github.com/prefix-dev/rattler", branch = "main" }
+"###
+    );
 }
 
 #[test]
 fn test_workspace_detection() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let manifest_path = workspace_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let manifest_path = workspace.manifest_path().to_path_buf();
 
-    // Apply patches to a workspace (should work with workspace.dependencies)
-    let source = PatchSource::local_path(workspace_path.clone());
-    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(manifest_path.clone()),
+        None,
+    )
+    .unwrap();
 
-    // Read the modified Cargo.toml
-    let content = fs::read_to_string(&manifest_path).unwrap();
+    let content = workspace.read_manifest();
+    let normalized = normalize_manifest(&content, Some(&workspace));
+    assert_snapshot!(
+        normalized.as_str(),
+        @r###"
+[workspace]
+members = ["crates/rattler-one", "crates/rattler-two", "crates/other-crate"]
 
-    // Patches should have been added
-    assert!(content.contains("[patch.crates-io]"));
+[workspace.dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+
+[workspace.metadata]
+
+[workspace.metadata.cargo-patch-source]
+original-versions = { other-crate = "3.0.0", rattler-one = "1.0.0", rattler-two = "2.0.0" }
+managed-patches = ["crates-io"]
+
+[patch]
+
+[patch.crates-io]
+other-crate = { path = "<workspace>/crates/other-crate" }
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
 }
 
 #[test]
 fn test_no_matching_crates() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
 
-    // Try to apply patches with a pattern that matches nothing
-    let source = PatchSource::local_path(workspace_path);
-    let result = apply_patches(source, Some(manifest_path), Some("nonexistent-*"));
+    let result = apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        Some("nonexistent-*"),
+    );
 
-    // Should fail with NoMatchingCrates error
-    assert!(result.is_err());
+    let err = result.unwrap_err();
+    let err_repr = format!("{:?}", err);
+    assert_snapshot!(
+        err_repr.as_str(),
+        @r###"NoMatchingCrates { pattern: "nonexistent-*" }"###
+    );
 }
 
 #[test]
 fn test_preserves_existing_patches() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = create_target_project(&temp_dir);
-    let manifest_path = project_path.join("Cargo.toml");
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
 
-    // Add an existing patch to the Cargo.toml
-    let mut existing_content = fs::read_to_string(&manifest_path).unwrap();
-    existing_content.push_str(
+    project.append_manifest(
         r#"
 [patch.crates-io]
 some-existing-crate = { path = "/some/other/path" }
 "#,
     );
-    fs::write(&manifest_path, existing_content).unwrap();
 
-    // Apply our patches
-    let source = PatchSource::local_path(workspace_path);
-    apply_patches(source, Some(manifest_path.clone()), Some("rattler-*")).unwrap();
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        Some("rattler-*"),
+    )
+    .unwrap();
 
-    // Verify our patches were added
-    let content_after_apply = fs::read_to_string(&manifest_path).unwrap();
-    assert!(content_after_apply.contains("rattler-one"));
-    assert!(content_after_apply.contains("rattler-two"));
-    assert!(content_after_apply.contains("some-existing-crate"));
+    let content_after_apply = project.read_manifest();
+    let normalized_after_apply = normalize_manifest(&content_after_apply, Some(&workspace));
+    assert_snapshot!(
+        normalized_after_apply.as_str(),
+        @r###"
+[package]
+name = "target-project"
+version = "0.1.0"
+edition = "2021"
 
-    // Remove our patches
-    remove_patches(Some(manifest_path.clone())).unwrap();
+[package.metadata]
 
-    // Verify the existing patch is still there
-    let content_after_remove = fs::read_to_string(&manifest_path).unwrap();
-    assert!(content_after_remove.contains("some-existing-crate"));
-    assert!(content_after_remove.contains("[patch.crates-io]"));
+[package.metadata.cargo-patch-source]
+original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
+managed-patches = ["crates-io"]
 
-    // But our patches should be gone from the patch section
-    // Extract just the patch section to verify
-    let patch_section_start = content_after_remove.find("[patch.crates-io]").unwrap();
-    let patch_section = &content_after_remove[patch_section_start..];
-    assert!(patch_section.contains("some-existing-crate"));
-    assert!(!patch_section.contains("rattler-one = { path"));
-    assert!(!patch_section.contains("rattler-two = { path"));
-}
+[dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
 
-#[test]
-fn test_patch_git_dependencies_without_version() {
-    let temp_dir = TempDir::new().unwrap();
-    let workspace_path = create_mock_workspace(&temp_dir);
-    let project_path = temp_dir.path().join("git-deps-project");
-    fs::create_dir(&project_path).unwrap();
+[patch.crates-io]
+some-existing-crate = { path = "/some/other/path" }
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
 
-    // Create a project with git dependencies (no version field)
-    let project_toml = r#"[package]
-name = "git-deps-project"
+    remove_patches(Some(project.manifest_path().to_path_buf())).unwrap();
+
+    let content_after_remove = project.read_manifest();
+    let normalized_after_remove = normalize_manifest(&content_after_remove, Some(&workspace));
+    assert_snapshot!(
+        normalized_after_remove.as_str(),
+        @r###"
+[package]
+name = "target-project"
 version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+other-crate = "3.0.0"
+rattler-one = "1.0.0"
+rattler-two = "2.0.0"
+
+[patch.crates-io]
+some-existing-crate = { path = "/some/other/path" }
+"###
+    );
+}
+
+#[test]
+fn test_reapply_prunes_stale_patches() {
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        None,
+    )
+    .unwrap();
+
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        Some("rattler-one"),
+    )
+    .unwrap();
+
+    let content = project.read_manifest();
+    let doc: DocumentMut = content.parse().unwrap();
+
+    let patch_table = doc
+        .get("patch")
+        .and_then(|p| p.get("crates-io"))
+        .and_then(|item| item.as_table())
+        .cloned()
+        .unwrap();
+
+    let mut patched_crates: Vec<_> = patch_table.iter().map(|(k, _)| k.to_string()).collect();
+    patched_crates.sort();
+    let patched_crates_repr = format!("{:?}", patched_crates);
+    assert_snapshot!(
+        patched_crates_repr.as_str(),
+        @r###"["rattler-one"]"###
+    );
+
+    let metadata = doc
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("cargo-patch-source"))
+        .map(|item| item.to_string())
+        .unwrap();
+
+    assert_snapshot!(
+        metadata.as_str(),
+        @r###"
+        original-versions = { rattler-one = "1.0.0" }
+        managed-patches = ["crates-io"]
+        "###
+    );
+}
+
+#[test]
+fn test_apply_skips_existing_patch_entries() {
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = rattler_project(&fixture);
+
+    project.append_manifest(
+        r#"
+[patch.crates-io]
+rattler-one = { path = "/custom/user/path" }
+"#,
+    );
+
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        None,
+    )
+    .unwrap();
+
+    let updated = project.read_manifest();
+    let doc: DocumentMut = updated.parse().unwrap();
+
+    let patch_crates_io = doc
+        .get("patch")
+        .and_then(|p| p.get("crates-io"))
+        .and_then(|item| item.as_table())
+        .cloned()
+        .unwrap();
+
+    let rattler_one_entry = patch_crates_io.get("rattler-one").unwrap().to_string();
+    let rattler_one_entry = rattler_one_entry.trim();
+    assert_snapshot!(rattler_one_entry, @r###"{ path = "/custom/user/path" }"###);
+
+    let mut patched_crates: Vec<_> = patch_crates_io.iter().map(|(k, _)| k.to_string()).collect();
+    patched_crates.sort();
+    let patched_crates_repr = format!("{:?}", patched_crates);
+    assert_snapshot!(
+        patched_crates_repr.as_str(),
+        @r###"["other-crate", "rattler-one", "rattler-two"]"###
+    );
+
+    let metadata = doc
+        .get("package")
+        .and_then(|p| p.get("metadata"))
+        .and_then(|m| m.get("cargo-patch-source"))
+        .map(|item| item.to_string())
+        .unwrap();
+
+    assert_snapshot!(
+        metadata.as_str(),
+        @r###"
+        original-versions = { other-crate = "3.0.0", rattler-two = "2.0.0" }
+        managed-patches = ["crates-io"]
+        "###
+    );
+}
+
+#[test]
+fn test_patch_git_dependencies_without_version() {
+    let fixture = TestFixture::new();
+    let workspace = rattler_workspace(&fixture);
+    let project = fixture
+        .project("git-deps-project")
+        .dep(
+            "rattler-one",
+            DependencySpec::git("https://github.com/prefix-dev/rattler").tag("v1.0.0"),
+        )
+        .dep(
+            "rattler-two",
+            DependencySpec::git("https://github.com/prefix-dev/rattler").tag("v1.0.0"),
+        )
+        .dep(
+            "other-crate",
+            DependencySpec::git("https://github.com/prefix-dev/rattler").tag("v1.0.0"),
+        )
+        .build();
+
+    apply_patches(
+        PatchSource::local_path(workspace.path().to_path_buf()),
+        Some(project.manifest_path().to_path_buf()),
+        None,
+    )
+    .unwrap();
+
+    let content = project.read_manifest();
+    let normalized = normalize_manifest(&content, Some(&workspace));
+    assert_snapshot!(
+        normalized.as_str(),
+        @r###"
+[package]
+name = "git-deps-project"
+version = "0.1.0"
+edition = "2021"
+
+[package.metadata]
+
+[package.metadata.cargo-patch-source]
+original-versions = { other-crate = "", rattler-one = "", rattler-two = "" }
+managed-patches = ["https://github.com/prefix-dev/rattler"]
+
+[dependencies]
+other-crate = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
 rattler-one = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
 rattler-two = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
-other-crate = { git = "https://github.com/prefix-dev/rattler", tag = "v1.0.0" }
-"#;
-    fs::write(project_path.join("Cargo.toml"), project_toml).unwrap();
-    fs::create_dir(project_path.join("src")).unwrap();
-    fs::write(project_path.join("src/main.rs"), "fn main() {}").unwrap();
 
-    let manifest_path = project_path.join("Cargo.toml");
+[patch]
 
-    // Apply patches - this should work even though dependencies don't have version fields
-    let source = PatchSource::local_path(workspace_path);
-    apply_patches(source, Some(manifest_path.clone()), None).unwrap();
-
-    // Verify patches were added
-    let content = fs::read_to_string(&manifest_path).unwrap();
-    assert!(content.contains("[patch"));
-    assert!(content.contains("rattler-one"));
-    assert!(content.contains("rattler-two"));
-    assert!(content.contains("other-crate"));
+[patch."https://github.com/prefix-dev/rattler"]
+other-crate = { path = "<workspace>/crates/other-crate" }
+rattler-one = { path = "<workspace>/crates/rattler-one" }
+rattler-two = { path = "<workspace>/crates/rattler-two" }
+"###
+    );
 }

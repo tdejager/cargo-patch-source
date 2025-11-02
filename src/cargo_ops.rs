@@ -1,5 +1,6 @@
 use crate::error::{PatchError, Result};
 use cargo_metadata::MetadataCommand;
+use regex::Regex;
 use std::path::Path;
 
 /// Information about a crate that can be patched
@@ -53,17 +54,7 @@ pub fn filter_crates_by_pattern(
         return Ok(crates);
     };
 
-    // Convert glob pattern to regex
-    let regex_pattern = pattern
-        .replace(".", r"\.")
-        .replace("*", ".*")
-        .replace("?", ".");
-    let regex_pattern = format!("^{}$", regex_pattern);
-
-    let re = regex::Regex::new(&regex_pattern).map_err(|e| PatchError::InvalidPattern {
-        pattern: pattern.to_string(),
-        source: e,
-    })?;
+    let re = glob_pattern_regex(pattern)?;
 
     let filtered: Vec<_> = crates
         .into_iter()
@@ -77,4 +68,42 @@ pub fn filter_crates_by_pattern(
     }
 
     Ok(filtered)
+}
+
+/// Compile a glob-like pattern into a Regex instance.
+pub fn glob_pattern_regex(pattern: &str) -> Result<Regex> {
+    let mut escaped = String::from("^");
+    for ch in pattern.chars() {
+        match ch {
+            '*' => escaped.push_str(".*"),
+            '?' => escaped.push('.'),
+            _ => escaped.push_str(&regex::escape(&ch.to_string())),
+        }
+    }
+    escaped.push('$');
+
+    Regex::new(&escaped).map_err(|e| PatchError::InvalidPattern {
+        pattern: pattern.to_string(),
+        source: e,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn glob_pattern_regex_handles_special_chars() {
+        let re = glob_pattern_regex("crate+name?(test)*").unwrap();
+        assert!(re.is_match("crate+name1(test)foo"));
+        assert!(!re.is_match("crate-name1(test)foo"));
+    }
+
+    #[test]
+    fn glob_pattern_regex_star_matches_slashes() {
+        let re = glob_pattern_regex("foo*bar").unwrap();
+        assert!(re.is_match("foobar"));
+        assert!(re.is_match("foo123bar"));
+        assert!(!re.is_match("foo123baz"));
+    }
 }

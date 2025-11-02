@@ -1,12 +1,12 @@
-use crate::cargo_ops::{filter_crates_by_pattern, query_workspace_crates};
+use crate::cargo_ops::{filter_crates_by_pattern, glob_pattern_regex, query_workspace_crates};
 use crate::error::{PatchError, Result};
 use crate::source::{GitReference, PatchSource, SourceWorkspacePath, TargetManifestPath};
 use crate::toml_ops::{
     add_managed_patch, detect_common_git_url, get_dependencies_table, get_dependency_version,
-    get_original_versions, read_cargo_toml, remove_managed_patches, store_original_versions,
-    update_dependency_version, write_cargo_toml,
+    get_managed_patches, get_original_versions, read_cargo_toml, remove_managed_patches,
+    store_original_versions, update_dependency_version, write_cargo_toml,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use toml_edit::Table;
 
@@ -35,6 +35,32 @@ pub fn apply_patches(
 
     // Read the target Cargo.toml (the manifest we're going to patch)
     let mut target_doc = read_cargo_toml(target_manifest_path.as_path())?;
+
+    // Clean up previously managed patches so we always operate from a fresh state
+    let existing_managed = get_managed_patches(&target_doc);
+    if !existing_managed.is_empty() {
+        let previous_versions = get_original_versions(&target_doc)?;
+        let versions_to_restore: Vec<_> = previous_versions
+            .iter()
+            .filter(|(_, version)| !version.is_empty())
+            .collect();
+
+        if !versions_to_restore.is_empty() {
+            println!(
+                "Restoring original versions for {} crates",
+                versions_to_restore.len()
+            );
+            for (crate_name, version) in &versions_to_restore {
+                update_dependency_version(&mut target_doc, crate_name, version)?;
+            }
+        }
+
+        if let Err(err) = remove_managed_patches(&mut target_doc) {
+            if !matches!(err, PatchError::NoPatchesFound) {
+                return Err(err);
+            }
+        }
+    }
 
     // Get current dependencies from the target to know which crates to patch
     // Include all dependencies, even those without version fields (e.g., git-only deps)
@@ -121,8 +147,26 @@ fn apply_local_path_patches(
         return Ok(());
     }
 
+    let existing_patched_crates = collect_existing_patched_crates(target_doc);
+    let mut managed_crates = Vec::new();
+    for crate_info in crates_to_patch {
+        if existing_patched_crates.contains(&crate_info.name) {
+            println!(
+                "  Skipping {} because a patch entry already exists",
+                crate_info.name
+            );
+            continue;
+        }
+        managed_crates.push(crate_info);
+    }
+
+    if managed_crates.is_empty() {
+        println!("No crates to patch after skipping existing patch entries");
+        return Ok(());
+    }
+
     // Collect crate names for git URL detection in the target
-    let crate_names: Vec<String> = crates_to_patch.iter().map(|c| c.name.clone()).collect();
+    let crate_names: Vec<String> = managed_crates.iter().map(|c| c.name.clone()).collect();
 
     // Detect if these dependencies in the target come from a common git URL
     let git_url = detect_common_git_url(target_doc, &crate_names);
@@ -141,7 +185,7 @@ fn apply_local_path_patches(
 
     // Update versions in target [workspace.dependencies] to match source local versions
     // Only update if the original dependency had a version field
-    for crate_info in &crates_to_patch {
+    for crate_info in &managed_crates {
         if let Some(original_version) = original_versions.get(&crate_info.name) {
             if !original_version.is_empty() {
                 update_dependency_version(target_doc, &crate_info.name, &crate_info.version)?;
@@ -151,7 +195,7 @@ fn apply_local_path_patches(
 
     // Create patch entries
     let mut patch_table = Table::new();
-    for crate_info in &crates_to_patch {
+    for crate_info in &managed_crates {
         let mut crate_patch = toml_edit::InlineTable::new();
 
         // Get the path to the crate (directory containing its Cargo.toml)
@@ -209,6 +253,22 @@ fn apply_local_path_patches(
     Ok(())
 }
 
+fn collect_existing_patched_crates(doc: &toml_edit::DocumentMut) -> HashSet<String> {
+    let mut result = HashSet::new();
+
+    if let Some(patch_section) = doc.get("patch").and_then(|p| p.as_table()) {
+        for (_, source_item) in patch_section.iter() {
+            if let Some(source_table) = source_item.as_table() {
+                for (crate_name, _) in source_table.iter() {
+                    result.insert(crate_name.to_string());
+                }
+            }
+        }
+    }
+
+    result
+}
+
 /// Apply patches from a git repository to the target manifest
 fn apply_git_patches(
     target_doc: &mut toml_edit::DocumentMut,
@@ -221,18 +281,7 @@ fn apply_git_patches(
     // So we'll patch all target dependencies that match the pattern (or all if no pattern)
 
     let crates_to_patch: Vec<_> = if let Some(pattern) = pattern {
-        // Convert glob pattern to regex
-        let regex_pattern = pattern
-            .replace(".", r"\.")
-            .replace("*", ".*")
-            .replace("?", ".");
-        let regex_pattern = format!("^{}$", regex_pattern);
-
-        let re = regex::Regex::new(&regex_pattern).map_err(|e| PatchError::InvalidPattern {
-            pattern: pattern.to_string(),
-            source: e,
-        })?;
-
+        let re = glob_pattern_regex(pattern)?;
         current_deps
             .keys()
             .filter(|name| re.is_match(name))
@@ -240,7 +289,6 @@ fn apply_git_patches(
             .collect()
     } else {
         // If no pattern, we need user to specify which crates
-        // For now, return error - user should use pattern with git
         return Err(PatchError::NoMatchingCrates {
             pattern: "none specified (pattern required for git sources)".to_string(),
         });
@@ -252,9 +300,27 @@ fn apply_git_patches(
         });
     }
 
+    let existing_patched_crates = collect_existing_patched_crates(target_doc);
+    let mut managed_crates = Vec::new();
+    for crate_name in crates_to_patch {
+        if existing_patched_crates.contains(&crate_name) {
+            println!(
+                "  Skipping {} because a patch entry already exists",
+                crate_name
+            );
+            continue;
+        }
+        managed_crates.push(crate_name);
+    }
+
+    if managed_crates.is_empty() {
+        println!("No crates to patch after skipping existing patch entries");
+        return Ok(());
+    }
+
     // Store original versions
     let mut original_versions = HashMap::new();
-    for crate_name in &crates_to_patch {
+    for crate_name in &managed_crates {
         if let Some(version) = current_deps.get(crate_name) {
             original_versions.insert(crate_name.clone(), version.clone());
         }
@@ -262,7 +328,7 @@ fn apply_git_patches(
 
     // Create patch entries
     let mut patch_table = Table::new();
-    for crate_name in &crates_to_patch {
+    for crate_name in &managed_crates {
         let mut crate_patch = toml_edit::InlineTable::new();
 
         crate_patch.insert("git", git_url.into());

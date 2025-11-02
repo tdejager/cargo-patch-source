@@ -2,20 +2,13 @@
 
 A Cargo extension to automatically apply dependency patch sections to `Cargo.toml` files. This tool is especially useful for local development workflows where you need to temporarily switch dependencies to local versions for testing and development.
 
-## Features
-
--  **Apply patches from local workspaces** - Point to a local workspace and automatically patch all matching dependencies
--  **Apply patches from git repositories** - Patch dependencies from a specific git branch, tag, or revision
--  **Pattern filtering** - Use wildcards to selectively patch only specific crates
--  **Easy removal** - Clean removal of patches to restore original configuration
--  **Workspace support** - Works with both workspace and package `Cargo.toml` files
--  **Format preserving** - Uses `toml_edit` to maintain your TOML formatting and comments
-
 ## Installation
 
 ```bash
-cargo install --path .
+pixi global install --path .
+cargo install --locked --path .
 ```
+After which, it should be available with `cargo patch-source`.
 
 ## Usage
 
@@ -50,16 +43,6 @@ Patch dependencies from a git repository:
 ```bash
 # Use default branch
 cargo patch-source apply --git https://github.com/prefix-dev/rattler --pattern "rattler-*"
-
-# Use specific branch
-cargo patch-source apply --git https://github.com/prefix-dev/rattler --branch main --pattern "rattler-*"
-
-# Use specific tag
-cargo patch-source apply --git https://github.com/prefix-dev/rattler --tag v1.0.0 --pattern "rattler-*"
-
-# Use specific revision
-cargo patch-source apply --git https://github.com/prefix-dev/rattler --rev abc123 --pattern "rattler-*"
-```
 
 **Note:** When using git sources, you must specify a `--pattern` to indicate which crates to patch.
 
@@ -104,6 +87,7 @@ rattler-two = "2.0.0"
 rattler-one = "1.0.0"
 rattler-two = "2.0.0"
 
+# This is added to keep track of the change
 [package.metadata.cargo-patch-source]
 original-versions = { rattler-one = "1.0.0", rattler-two = "2.0.0" }
 managed-patches = ["crates-io"]
@@ -113,19 +97,9 @@ rattler-one = { path = "../rattler/crates/rattler-one" }
 rattler-two = { path = "../rattler/crates/rattler-two" }
 ```
 
-### After removing patches:
-
-```toml
-[dependencies]
-rattler-one = "1.0.0"
-rattler-two = "2.0.0"
-```
-
 The tool uses Cargo's metadata convention to track:
 - **`original-versions`**: Original dependency versions for restoration
-- **`managed-patches`**: Which patch sections are managed by the tool
-
-This approach is idiomatic and officially supported by Cargo.
+- **`managed-patches`**: Which patch sections are managed by the tool, so as not to remove too much
 
 ## Examples
 
@@ -187,30 +161,10 @@ Patterns support basic wildcards:
 - `?` - Matches a single character
 - Patterns are anchored (must match the entire crate name)
 
-Examples:
+### Examples:
 - `rattler-*` - Matches `rattler-one`, `rattler-two`, etc.
 - `*-sys` - Matches any crate ending with `-sys`
 - `exact-name` - Matches only `exact-name`
-
-## Development
-
-### Building
-
-```bash
-cargo build
-```
-
-### Testing
-
-```bash
-cargo test
-```
-
-### Running Locally
-
-```bash
-cargo run -- patch-source apply --help
-```
 
 ## License
 
@@ -222,5 +176,5 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Acknowledgments
 
-- Inspired by the [pixi](https://github.com/prefix-dev/pixi) project's `local_patch.py`
+- Continuation on [pixi](https://github.com/prefix-dev/pixi) project's `local_patch.py`
 - Built with [clap](https://github.com/clap-rs/clap), [toml_edit](https://github.com/ordian/toml_edit), and [miette](https://github.com/zkat/miette)
