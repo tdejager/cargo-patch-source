@@ -204,7 +204,9 @@ fn apply_local_path_patches(
             .parent()
             .expect("Crate manifest should have a parent directory");
 
-        crate_patch.insert("path", crate_path.display().to_string().into());
+        // Always use forward slashes for paths in TOML (cross-platform compatibility)
+        let path_str = crate_path.display().to_string().replace('\\', "/");
+        crate_patch.insert("path", path_str.into());
 
         patch_table.insert(
             &crate_info.name,

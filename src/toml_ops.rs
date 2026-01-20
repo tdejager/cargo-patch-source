@@ -31,7 +31,7 @@ pub fn write_cargo_toml(path: &Path, doc: &DocumentMut) -> Result<()> {
     })
 }
 
-/// Check if the document is a workspace (has [workspace] or [workspace.dependencies])
+/// Check if the document is a workspace (has `[workspace]` or `[workspace.dependencies]`)
 pub fn is_workspace(doc: &DocumentMut) -> bool {
     doc.get("workspace").is_some()
 }
