@@ -51,11 +51,11 @@ impl DependencySpec {
             || self
                 .version
                 .as_ref()
-                .map_or(false, |v| v.contains('*') || v.contains('?'));
+                .is_some_and(|v| v.contains('*') || v.contains('?'));
 
         if !complex {
             if let Some(version) = &self.version {
-                return toml_edit::value(version.clone()).into();
+                return toml_edit::value(version.clone());
             }
         }
 

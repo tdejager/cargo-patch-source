@@ -29,7 +29,11 @@ fn normalize_manifest(content: &str, workspace: Option<&Workspace>) -> String {
     let mut normalized = content.to_string();
     if let Some(ws) = workspace {
         if let Some(ws_str) = ws.path().to_str() {
+            // Handle both forward and backslash versions of the path (cross-platform)
             normalized = normalized.replace(ws_str, "<workspace>");
+            // Also replace the backslash version on Windows
+            let ws_str_fwd = ws_str.replace('\\', "/");
+            normalized = normalized.replace(&ws_str_fwd, "<workspace>");
         }
     }
     normalized
